@@ -1,0 +1,6 @@
+gradio
+spotipy
+speechrecognition
+transformers
+torch
+python-dotenv
