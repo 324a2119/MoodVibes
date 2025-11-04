@@ -6,6 +6,9 @@ from transformers import pipeline
 from dotenv import load_dotenv
 import os
 
+print("CLIENT_ID:", CLIENT_ID)
+print("CLIENT_SECRET:", CLIENT_SECRET)
+
 # 環境変数読み込み (.env)
 load_dotenv()
 CLIENT_ID = os.getenv("ff259b9ec7f3420381662c278fed342f")
