@@ -1,74 +1,46 @@
-import gradio as gr
-import speech_recognition as sr
+import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-from transformers import pipeline
-from dotenv import load_dotenv
-import os
 
+# ===== Spotify API認証 =====
+CLIENT_ID = "あなたのClient ID"
+CLIENT_SECRET = "あなたのClient Secret"
 
-# 環境変数読み込み (.env)
-load_dotenv()
-CLIENT_ID = os.getenv("ff259b9ec7f3420381662c278fed342f")
-CLIENT_SECRET = os.getenv("a35403dc7fb64531ba6a98c5794fcef8")
-
-print("CLIENT_ID:", CLIENT_ID)
-print("CLIENT_SECRET:", CLIENT_SECRET)
-
-# Spotify API認証
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET
 ))
 
-# 感情分析モデル（日本語可）
-emotion_analyzer = pipeline("sentiment-analysis")
+# ===== Streamlit UI =====
+st.title("🎵 Spotify プレイリスト検索アプリ")
+st.write("キーワードを入力してSpotifyのプレイリストを検索します。")
 
-def analyze_mood(audio_path):
-    # 音声→テキスト
-    r = sr.Recognizer()
-    with sr.AudioFile(audio_path) as source:
-        audio_data = r.record(source)
-    try:
-        text = r.recognize_google(audio_data, language="ja-JP")
-    except:
-        return "音声を認識できませんでした。", "もう一度お試しください。"
+# 検索入力
+query = st.text_input("検索キーワードを入力", value="楽しい")
 
-    # 感情分析
-    result = emotion_analyzer(text)[0]
-    label = result["label"]
-
-    # 感情に応じて検索キーワード設定
-    if "POS" in label or "positive" in label.lower():
-        query = "happy upbeat"
-        mood = "ポジティブ 😊"
-    elif "NEG" in label or "negative" in label.lower():
-        query = "chill lofi"
-        mood = "ネガティブ 😔"
+if st.button("検索"):
+    if query.strip() == "":
+        st.warning("検索キーワードを入力してください。")
     else:
-        query = "relax jazz"
-        mood = "ニュートラル 😐"
+        # プレイリストを検索
+        results = sp.search(q=query, type='playlist', limit=10)
+        playlists = results['playlists']['items']
 
-    # Spotifyでプレイリスト検索
-    results = sp.search(q=query, type="playlist", limit=3)
-    playlists = []
-    for p in results["playlists"]["items"]:
-        name = p["name"]
-        url = p["external_urls"]["spotify"]
-        playlists.append(f"🎵 [{name}]({url})")
+        if not playlists:
+            st.info("プレイリストが見つかりませんでした。")
+        else:
+            st.subheader("🔍 検索結果")
+            for idx, playlist in enumerate(playlists):
+                with st.expander(f"{playlist['name']}  ({playlist['owner']['display_name']})"):
+                    st.image(playlist['images'][0]['url'], width=300)
+                    st.markdown(f"[Spotifyで開く]({playlist['external_urls']['spotify']})")
+                    playlist_id = playlist['id']
 
-    # 出力結果
-    playlist_text = "\n".join(playlists)
-    return f"🗣️ あなたの話した内容: {text}\n\n感情判定: {mood}", playlist_text
-
-# Gradio UI
-app = gr.Interface(
-    fn=analyze_mood,
-    inputs=gr.Audio(sources=["microphone"], type="filepath", label="今の気分を話してください"),
-    outputs=[gr.Textbox(label="解析結果"), gr.Markdown(label="おすすめプレイリスト")],
-    title="🎧 MoodTunes AI",
-    description="話した内容から感情を分析し、Spotifyのプレイリストをおすすめします。",
-)
-
-if __name__ == "__main__":
-    app.launch()
+                    # プレイリスト内の曲を取得
+                    tracks = sp.playlist_tracks(playlist_id)
+                    st.write("🎶 曲一覧：")
+                    for t in tracks['items']:
+                        track = t['track']
+                        track_name = track['name']
+                        artist_name = track['artists'][0]['name']
+                        st.write(f"- {track_name} / {artist_name}")
