@@ -1,4 +1,5 @@
 streamlit
 spotipy
-SpeechRecognition
+speechrecognition
 pydub
+ffmpeg-python
