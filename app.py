@@ -65,7 +65,7 @@ if uploaded_file is not None:
         for keyword in detected:
             st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
 
-            results = sp.search(q=keyword, type="playlist", limit=5)
+            results = sp.search(q=keyword, type="playlist", limit=5, market="JP")
             playlists = results['playlists']['items']
 
             if not playlists:
