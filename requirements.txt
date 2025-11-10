@@ -1,2 +1,4 @@
-spotipy
 streamlit
+spotipy
+SpeechRecognition
+pydub
