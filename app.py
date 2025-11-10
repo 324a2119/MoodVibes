@@ -7,8 +7,8 @@ import tempfile
 # ==========================
 # Spotify認証
 # ==========================
-CLIENT_ID = st.secrets["ff259b9ec7f3420381662c278fed342f"]
-CLIENT_SECRET = st.secrets["a35403dc7fb64531ba6a98c5794fcef8"]
+CLIENT_ID = "ff259b9ec7f3420381662c278fed342f"
+CLIENT_SECRET = "a35403dc7fb64531ba6a98c5794fcef8"
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=CLIENT_ID,
