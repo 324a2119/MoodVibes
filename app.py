@@ -1,13 +1,12 @@
 import streamlit as st
-import speech_recognition as sr
-from pydub import AudioSegment
-import io
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+import speech_recognition as sr
+import tempfile
 
-# =============================
-# Spotify API 認証
-# =============================
+# ==========================
+# Spotify認証
+# ==========================
 CLIENT_ID = "ff259b9ec7f3420381662c278fed342f"
 CLIENT_SECRET = "a35403dc7fb64531ba6a98c5794fcef8"
 
@@ -16,70 +15,54 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_secret=CLIENT_SECRET
 ))
 
-# =============================
+# ==========================
 # Streamlit UI
-# =============================
-st.title("🎧 音声で感情を分析 → Spotifyでおすすめプレイリストを表示")
+# ==========================
+st.title("🎵 音声感情でSpotifyプレイリスト検索アプリ")
+st.write("音声をアップロードすると、感情に関連するプレイリストを検索します。")
 
-uploaded_file = st.file_uploader("音声ファイルをアップロードしてください", type=["wav", "mp3", "m4a", "flac"])
+uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav, mp3 など)", type=["wav","mp3"])
 
-query = None  # 検索キーワード（感情ワード）を入れる変数
+if uploaded_file is not None:
+    # 一時ファイルとして保存
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        audio_path = tmp_file.name
 
-# =============================
-# 音声認識処理
-# =============================
-if uploaded_file:
-    st.audio(uploaded_file)
-
+    # ==========================
+    # 音声 → テキスト
+    # ==========================
+    r = sr.Recognizer()
     try:
-        # 音声を一時的にWAVに変換
-        audio = AudioSegment.from_file(uploaded_file)
-        wav_io = io.BytesIO()
-        audio.export(wav_io, format="wav")
-        wav_io.seek(0)
-
-        # 音声認識
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_io) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language="ja-JP")
-
-        st.success("🎤 音声認識結果:")
-        st.write(text)
-
-        # 簡易的な感情ワード抽出（実際は自然言語処理などで改善可）
-        if any(word in text for word in ["楽しい", "嬉しい", "ワクワク", "元気"]):
-            query = "happy"
-        elif any(word in text for word in ["悲しい", "寂しい", "泣きたい"]):
-            query = "sad"
-        elif any(word in text for word in ["落ち着く", "癒し", "リラックス"]):
-            query = "chill"
-        elif any(word in text for word in ["怒り", "ムカつく", "イライラ"]):
-            query = "angry"
-        else:
-            query = "mood"
-
-        st.info(f"🔍 検出された感情に基づく検索ワード: **{query}**")
-
+        with sr.AudioFile(audio_path) as source:
+            audio = r.record(source)
+        text = r.recognize_google(audio, language="ja-JP")
+        st.write("文字起こし結果:", text)
     except Exception as e:
-        st.error(f"音声認識に失敗しました: {e}")
+        st.error("音声認識に失敗しました: " + str(e))
+        st.stop()
 
-# =============================
-# Spotify検索結果を表示
-# =============================
-if query:
-    results = sp.search(q=query, type='playlist', limit=5)
+    # ==========================
+    # 感情単語抽出
+    # ==========================
+    emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
+    detected = [w for w in emotion_words if w in text]
 
-    st.subheader("🎵 Spotifyおすすめプレイリスト:")
+    if not detected:
+        st.info("感情に合う単語が見つかりませんでした。")
+        st.stop()
+    else:
+        st.write("抽出された感情単語:", ", ".join(detected))
 
-    for playlist in results["playlists"]["items"]:
-        with st.expander(f"{playlist['name']}  ({playlist['owner']['display_name']})"):
-            st.image(playlist["images"][0]["url"], width=300)
-            st.write(f"[Spotifyで開く]({playlist['external_urls']['spotify']})")
-
-            # 曲一覧を取得
-            tracks = sp.playlist_tracks(playlist["id"])
-            for idx, item in enumerate(tracks["items"], start=1):
-                track = item["track"]
-                st.write(f"{idx}. {track['name']} — {track['artists'][0]['name']}")
-
+    # ==========================
+    # Spotify検索
+    # ==========================
+    for keyword in detected:
+        st.subheader(f"「{keyword}」に関連するプレイリスト")
+        results = sp.search(q=keyword, type="playlist", limit=5)
+        playlists = results['playlists']['items']
+        if not playlists:
+            st.write("見つかりませんでした")
+        for playlist in playlists:
+            st.write(f"- {playlist['name']} ({playlist['owner'].get('display_name','不明')})")
+            st.markdown(f"[Spotifyで開く]({playlist['external_urls']['spotify']})")
