@@ -3,7 +3,6 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import speech_recognition as sr
 import tempfile
-import os
 
 # ==========================
 # Spotify認証
@@ -22,82 +21,77 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声感情でSpotifyプレイリスト検索アプリ")
 st.write("音声をアップロードすると、感情に関連するプレイリストを検索します。")
 
-uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wavのみ対応)", type=["wav"])
+uploaded_file = st.file_uploader(
+    "音声ファイルをアップロードしてください (wav, mp3 など)",
+    type=["wav", "mp3"]
+)
 
+# 検索ボタン
 if uploaded_file is not None:
-    # 一時ファイルとして保存
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        audio_path = tmp_file.name
+    if st.button("🔍 感情からプレイリストを検索"):
+        # 一時ファイルとして保存
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            audio_path = tmp_file.name
 
-    # ==========================
-    # 音声 → テキスト
-    # ==========================
-    r = sr.Recognizer()
-    try:
-        with sr.AudioFile(audio_path) as source:
-            audio = r.record(source)
-        text = r.recognize_google(audio, language="ja-JP")
-        st.write("文字起こし結果:", text)
-    except Exception as e:
-        st.error("音声認識に失敗しました: " + str(e))
-        st.stop()
+        # ==========================
+        # 音声 → テキスト変換（ffmpegなし）
+        # ==========================
+        r = sr.Recognizer()
+        try:
+            with sr.AudioFile(audio_path) as source:
+                audio = r.record(source)
+            text = r.recognize_google(audio, language="ja-JP")
+            st.write("🗣️ 文字起こし結果:", text)
+        except Exception as e:
+            st.error("音声認識に失敗しました: " + str(e))
+            st.stop()
 
-    # ==========================
-    # 感情単語抽出
-    # ==========================
-    emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
-    detected = [w for w in emotion_words if w in text]
+        # ==========================
+        # 感情単語抽出
+        # ==========================
+        emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
+        detected = [w for w in emotion_words if w in text]
 
-    if not detected:
-        st.info("感情に合う単語が見つかりませんでした。")
-        st.stop()
-    else:
-        st.write("抽出された感情単語:", ", ".join(detected))
+        if not detected:
+            st.info("感情に合う単語が見つかりませんでした。")
+            st.stop()
+        else:
+            st.write("🔍 抽出された感情単語:", ", ".join(detected))
 
-    # ==========================
-    # Spotify検索（邦楽優先）＋曲一覧＋試聴ボタン
-    # ==========================
-    for keyword in detected:
-        st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
+        # ==========================
+        # Spotifyプレイリスト検索 & 曲一覧表示
+        # ==========================
+        for keyword in detected:
+            st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
 
-        results = sp.search(q=f"{keyword} プレイリスト", type="playlist", limit=5, market="JP")
-        playlists = results['playlists']['items']
+            results = sp.search(q=keyword, type="playlist", limit=5, market="JP")
+            playlists = results['playlists']['items']
 
-        if not playlists:
-            st.write("見つかりませんでした")
-            continue
+            if not playlists:
+                st.write("プレイリストが見つかりませんでした。")
+                continue
 
-        for playlist in playlists:
-            playlist_name = playlist['name']
-            playlist_owner = playlist['owner'].get('display_name', '不明')
-            playlist_url = playlist['external_urls']['spotify']
-            playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
-            playlist_id = playlist['id']
+            # プレイリストごとにドロップダウンで詳細表示
+            for playlist in playlists:
+                playlist_name = playlist['name']
+                playlist_url = playlist['external_urls']['spotify']
+                playlist_owner = playlist['owner'].get('display_name', '不明')
+                playlist_id = playlist['id']
+                playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
 
-            # 🔽 ドロップダウンで展開
-            with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
-                if playlist_image:
-                    st.image(playlist_image, width=300)
-                st.markdown(f"[Spotifyで開く]({playlist_url})")
+                with st.expander(f"🎵 {playlist_name}（作成者：{playlist_owner}）"):
+                    if playlist_image:
+                        st.image(playlist_image, width=250)
+                    st.markdown(f"[Spotifyで開く ▶️]({playlist_url})")
 
-                # プレイリスト内の曲一覧
-                tracks = sp.playlist_tracks(playlist_id)
-                st.write("🎶 曲一覧：")
-                for t in tracks['items']:
-                    track = t['track']
-                    if track is None:
-                        continue
-                    track_name = track['name']
-                    artist_name = track['artists'][0]['name']
-                    preview_url = track.get('preview_url')
-
-                    st.write(f"- {track_name} / {artist_name}")
-                    # 試聴URLがあれば再生ボタンを追加
-                    if preview_url:
-                        st.audio(preview_url, format="audio/mp3")
-                    else:
-                        st.caption("🔇 プレビューなし")
-
-    # 後片付け
-    os.remove(audio_path)
+                    try:
+                        tracks = sp.playlist_tracks(playlist_id)
+                        st.write("🎶 曲一覧：")
+                        for t in tracks['items']:
+                            track = t['track']
+                            track_name = track['name']
+                            artist_name = track['artists'][0]['name']
+                            st.write(f"- {track_name} / {artist_name}")
+                    except Exception as e:
+                        st.warning(f"曲の取得中にエラーが発生しました: {e}")
