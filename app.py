@@ -3,6 +3,8 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import speech_recognition as sr
 import tempfile
+import os
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 
 # ==========================
 # Spotify認証
@@ -18,80 +20,114 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 # ==========================
 # Streamlit UI
 # ==========================
-st.title("🎵 音声感情でSpotifyプレイリスト検索アプリ")
-st.write("音声をアップロードすると、感情に関連するプレイリストを検索します。")
+st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
+st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-uploaded_file = st.file_uploader(
-    "音声ファイルをアップロードしてください (wav, mp3 など)",
-    type=["wav", "mp3"]
-)
+# ==========================
+# 音声入力オプション
+# ==========================
+input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
-# 検索ボタン
-if uploaded_file is not None:
-    if st.button("🔍 感情からプレイリストを検索"):
-        # 一時ファイルとして保存
+# 一時ファイルのパスを格納する変数
+audio_path = None
+
+# ==========================
+# マイク録音モード
+# ==========================
+class AudioProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.audio_frames = []
+
+    def recv_audio(self, frame):
+        self.audio_frames.append(frame.to_ndarray().tobytes())
+        return frame
+
+if input_mode == "🎙️ マイクで話す":
+    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を口に出してみてください。録音が終わったら停止ボタンを押してください。")
+
+    webrtc_ctx = webrtc_streamer(
+        key="speech-capture",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=1024,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+    )
+
+    if webrtc_ctx and webrtc_ctx.audio_receiver:
+        audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=2)
+        if audio_frames:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+                tmp_wav.write(audio_frames[0].to_ndarray().tobytes())
+                audio_path = tmp_wav.name
+
+# ==========================
+# アップロードモード
+# ==========================
+elif input_mode == "📁 音声ファイルをアップロード":
+    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav形式推奨)", type=["wav"])
+    if uploaded_file is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(uploaded_file.read())
             audio_path = tmp_file.name
 
-        # ==========================
-        # 音声 → テキスト変換（ffmpegなし）
-        # ==========================
-        r = sr.Recognizer()
-        try:
-            with sr.AudioFile(audio_path) as source:
-                audio = r.record(source)
-            text = r.recognize_google(audio, language="ja-JP")
-            st.write("🗣️ 文字起こし結果:", text)
-        except Exception as e:
-            st.error("音声認識に失敗しました: " + str(e))
-            st.stop()
+# ==========================
+# 音声認識処理
+# ==========================
+if audio_path:
+    r = sr.Recognizer()
+    try:
+        with sr.AudioFile(audio_path) as source:
+            audio = r.record(source)
+        text = r.recognize_google(audio, language="ja-JP")
+        st.success("🗣️ 音声認識結果:")
+        st.write(text)
+    except Exception as e:
+        st.error("音声認識に失敗しました: " + str(e))
+        st.stop()
+
+    # ==========================
+    # 感情単語抽出
+    # ==========================
+    emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
+    detected = [w for w in emotion_words if w in text]
+
+    if not detected:
+        st.info("感情を表す単語が見つかりませんでした。")
+    else:
+        st.write("抽出された感情単語:", ", ".join(detected))
 
         # ==========================
-        # 感情単語抽出
-        # ==========================
-        emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
-        detected = [w for w in emotion_words if w in text]
-
-        if not detected:
-            st.info("感情に合う単語が見つかりませんでした。")
-            st.stop()
-        else:
-            st.write("🔍 抽出された感情単語:", ", ".join(detected))
-
-        # ==========================
-        # Spotifyプレイリスト検索 & 曲一覧表示
+        # Spotify検索（邦楽優先）
         # ==========================
         for keyword in detected:
             st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
 
-            results = sp.search(q=keyword, type="playlist", limit=5, market="JP")
+            results = sp.search(q=f"{keyword} プレイリスト", type="playlist", limit=5, market="JP")
             playlists = results['playlists']['items']
 
             if not playlists:
-                st.write("プレイリストが見つかりませんでした。")
+                st.write("見つかりませんでした")
                 continue
 
-            # プレイリストごとにドロップダウンで詳細表示
             for playlist in playlists:
                 playlist_name = playlist['name']
-                playlist_url = playlist['external_urls']['spotify']
                 playlist_owner = playlist['owner'].get('display_name', '不明')
-                playlist_id = playlist['id']
+                playlist_url = playlist['external_urls']['spotify']
                 playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
+                playlist_id = playlist['id']
 
-                with st.expander(f"🎵 {playlist_name}（作成者：{playlist_owner}）"):
+                with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
                     if playlist_image:
-                        st.image(playlist_image, width=250)
-                    st.markdown(f"[Spotifyで開く ▶️]({playlist_url})")
+                        st.image(playlist_image, width=300)
+                    st.markdown(f"[Spotifyで開く]({playlist_url})")
 
-                    try:
-                        tracks = sp.playlist_tracks(playlist_id)
-                        st.write("🎶 曲一覧：")
-                        for t in tracks['items']:
-                            track = t['track']
+                    tracks = sp.playlist_tracks(playlist_id)
+                    st.write("🎶 曲一覧：")
+                    for t in tracks['items']:
+                        track = t['track']
+                        if track:
                             track_name = track['name']
                             artist_name = track['artists'][0]['name']
                             st.write(f"- {track_name} / {artist_name}")
-                    except Exception as e:
-                        st.warning(f"曲の取得中にエラーが発生しました: {e}")
+
+    os.remove(audio_path)
