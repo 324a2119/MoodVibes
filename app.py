@@ -28,7 +28,6 @@ st.write("マイクで話すか、音声ファイルをアップロードして�
 # ==========================
 input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
-# 一時ファイルのパスを格納する変数
 audio_path = None
 
 # ==========================
@@ -36,29 +35,38 @@ audio_path = None
 # ==========================
 class AudioProcessor(AudioProcessorBase):
     def __init__(self):
-        self.audio_frames = []
+        self.audio_frames = b""
 
     def recv_audio(self, frame):
-        self.audio_frames.append(frame.to_ndarray().tobytes())
+        # 音声データをバイト列として蓄積
+        self.audio_frames += frame.to_ndarray().tobytes()
         return frame
 
+
 if input_mode == "🎙️ マイクで話す":
-    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を口に出してみてください。録音が終わったら停止ボタンを押してください。")
+    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を話してみてください。録音が終わったら停止ボタンを押してください。")
 
     webrtc_ctx = webrtc_streamer(
         key="speech-capture",
-        mode=WebRtcMode.SENDONLY,
+        mode=WebRtcMode.SENDRECV,
         audio_receiver_size=1024,
         media_stream_constraints={"audio": True, "video": False},
         async_processing=True,
+        audio_processor_factory=AudioProcessor,
     )
 
-    if webrtc_ctx and webrtc_ctx.audio_receiver:
-        audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=2)
-        if audio_frames:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-                tmp_wav.write(audio_frames[0].to_ndarray().tobytes())
-                audio_path = tmp_wav.name
+    # 録音が完了したら音声を保存
+    if webrtc_ctx and webrtc_ctx.state.playing:
+        st.info("録音中です…停止ボタンを押すと処理が始まります。")
+
+    if webrtc_ctx and not webrtc_ctx.state.playing:
+        if hasattr(webrtc_ctx, "audio_processor") and webrtc_ctx.audio_processor:
+            audio_data = webrtc_ctx.audio_processor.audio_frames
+            if audio_data:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+                    tmp_wav.write(audio_data)
+                    audio_path = tmp_wav.name
+                    st.success("🎙️ 録音完了！")
 
 # ==========================
 # アップロードモード
@@ -69,6 +77,7 @@ elif input_mode == "📁 音声ファイルをアップロード":
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(uploaded_file.read())
             audio_path = tmp_file.name
+            st.success("📁 ファイルを受け取りました")
 
 # ==========================
 # 音声認識処理
@@ -82,7 +91,7 @@ if audio_path:
         st.success("🗣️ 音声認識結果:")
         st.write(text)
     except Exception as e:
-        st.error("音声認識に失敗しました: " + str(e))
+        st.error(f"音声認識に失敗しました: {e}")
         st.stop()
 
     # ==========================
