@@ -3,3 +3,4 @@ spotipy
 SpeechRecognition
 streamlit-webrtc
 av
+python-dotenv

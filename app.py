@@ -4,13 +4,23 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import speech_recognition as sr
 import tempfile
 import os
+from dotenv import load_dotenv
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+
+# .envファイルを読み込む
+load_dotenv()
 
 # ==========================
 # Spotify認証
 # ==========================
-CLIENT_ID = "ff259b9ec7f3420381662c278fed342f"
-CLIENT_SECRET = "a35403dc7fb64531ba6a98c5794fcef8"
+# 環境変数から認証情報を取得
+CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
+CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
+
+# 認証情報が設定されているか確認
+if not CLIENT_ID or not CLIENT_SECRET:
+    st.error("Spotifyの認証情報が設定されていません。環境変数（.envファイルなど）を確認してください。")
+    st.stop()
 
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
     client_id=CLIENT_ID,
@@ -23,11 +33,18 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
+# セッション状態で音声ファイルのパスと録音状態を管理
+if "audio_path" not in st.session_state:
+    st.session_state.audio_path = None
+if "recording_completed" not in st.session_state:
+    st.session_state.recording_completed = False
+
 # ==========================
 # 音声入力オプション
 # ==========================
 input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
+# audio_path変数を初期化
 audio_path = None
 
 # ==========================
@@ -55,23 +72,38 @@ if input_mode == "🎙️ マイクで話す":
         audio_processor_factory=AudioProcessor,
     )
 
-    # 録音が完了したら音声を保存
+    # 録音中の処理
     if webrtc_ctx and webrtc_ctx.state.playing:
         st.info("録音中です…停止ボタンを押すと処理が始まります。")
+        # 録音開始時に過去の録音状態をリセット
+        st.session_state.recording_completed = False
+        st.session_state.audio_path = None
 
-    if webrtc_ctx and not webrtc_ctx.state.playing:
+    # 録音停止後の処理
+    if webrtc_ctx and not webrtc_ctx.state.playing and not st.session_state.recording_completed:
         if hasattr(webrtc_ctx, "audio_processor") and webrtc_ctx.audio_processor:
             audio_data = webrtc_ctx.audio_processor.audio_frames
             if audio_data:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
                     tmp_wav.write(audio_data)
-                    audio_path = tmp_wav.name
-                    st.success("🎙️ 録音完了！")
+                    st.session_state.audio_path = tmp_wav.name
+                st.session_state.recording_completed = True
+                # ページを再実行して「録音完了」メッセージを確実に表示
+                st.rerun()
+
+    # 録音完了メッセージの表示
+    if st.session_state.recording_completed:
+        st.success("🎙️ 録音完了！")
+        audio_path = st.session_state.audio_path
 
 # ==========================
 # アップロードモード
 # ==========================
 elif input_mode == "📁 音声ファイルをアップロード":
+    # 過去の録音状態をリセット
+    st.session_state.recording_completed = False
+    st.session_state.audio_path = None
+    
     uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav形式推奨)", type=["wav"])
     if uploaded_file is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
@@ -140,3 +172,6 @@ if audio_path:
                             st.write(f"- {track_name} / {artist_name}")
 
     os.remove(audio_path)
+    # 処理完了後にセッション状態をリセット
+    st.session_state.audio_path = None
+    st.session_state.recording_completed = False
