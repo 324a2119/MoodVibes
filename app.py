@@ -1,10 +1,24 @@
 import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import speech_recognition as sr
 import tempfile
 import os
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+from openai import OpenAI
+
+# ==========================
+# OpenAI Whisper
+# ==========================
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+def transcribe_with_whisper(audio_path):
+    with open(audio_path, "rb") as f:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-mini-tts",
+            file=f
+        )
+    return transcript.text
+
 
 # ==========================
 # Spotify認証
@@ -23,28 +37,25 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-# ==========================
-# 音声入力オプション
-# ==========================
 input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
 audio_path = None
 
+
 # ==========================
-# マイク録音モード
+# マイク録音モード（修正版）
 # ==========================
 class AudioProcessor(AudioProcessorBase):
     def __init__(self):
         self.audio_frames = b""
 
     def recv_audio(self, frame):
-        # 音声データをバイト列として蓄積
         self.audio_frames += frame.to_ndarray().tobytes()
         return frame
 
 
 if input_mode == "🎙️ マイクで話す":
-    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を話してみてください。録音が終わったら停止ボタンを押してください。")
+    st.info("🎤 『楽しい』『悲しい』『落ち着く』など話してください。")
 
     webrtc_ctx = webrtc_streamer(
         key="speech-capture",
@@ -55,43 +66,43 @@ if input_mode == "🎙️ マイクで話す":
         audio_processor_factory=AudioProcessor,
     )
 
-    # 録音が完了したら音声を保存
     if webrtc_ctx and webrtc_ctx.state.playing:
-        st.info("録音中です…停止ボタンを押すと処理が始まります。")
+        st.info("録音中…停止ボタンを押してください。")
 
+    # STOPされたタイミングで音声を保存
     if webrtc_ctx and not webrtc_ctx.state.playing:
         if hasattr(webrtc_ctx, "audio_processor") and webrtc_ctx.audio_processor:
             audio_data = webrtc_ctx.audio_processor.audio_frames
             if audio_data:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-                    tmp_wav.write(audio_data)
-                    audio_path = tmp_wav.name
-                    st.success("🎙️ 録音完了！")
+                # WAVではなくMP3（WhisperはMP3対応）
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
+                    tmp_mp3.write(audio_data)
+                    audio_path = tmp_mp3.name
+                    st.success("🎙️ 録音完了！Whisperで解析します…")
+
 
 # ==========================
-# アップロードモード
+# アップロードモード（mp3対応へ修正）
 # ==========================
 elif input_mode == "📁 音声ファイルをアップロード":
-    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav形式推奨)", type=["wav"])
+    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください", type=["wav", "mp3", "m4a"])
     if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
             tmp_file.write(uploaded_file.read())
             audio_path = tmp_file.name
             st.success("📁 ファイルを受け取りました")
 
+
 # ==========================
-# 音声認識処理
+# Whisperで音声認識
 # ==========================
 if audio_path:
-    r = sr.Recognizer()
     try:
-        with sr.AudioFile(audio_path) as source:
-            audio = r.record(source)
-        text = r.recognize_google(audio, language="ja-JP")
-        st.success("🗣️ 音声認識結果:")
+        text = transcribe_with_whisper(audio_path)
+        st.success("📝 Whisper認識結果:")
         st.write(text)
     except Exception as e:
-        st.error(f"音声認識に失敗しました: {e}")
+        st.error(f"Whisperでの音声認識に失敗しました: {e}")
         st.stop()
 
     # ==========================
@@ -135,8 +146,6 @@ if audio_path:
                     for t in tracks['items']:
                         track = t['track']
                         if track:
-                            track_name = track['name']
-                            artist_name = track['artists'][0]['name']
-                            st.write(f"- {track_name} / {artist_name}")
+                            st.write(f"- {track['name']} / {track['artists'][0]['name']}")
 
     os.remove(audio_path)
