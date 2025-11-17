@@ -1,24 +1,16 @@
 import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+import speech_recognition as sr
 import tempfile
 import os
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 from openai import OpenAI
 
 # ==========================
-# OpenAI Whisper
+# OpenAI Whisper（APIキーをベタ書き）
 # ==========================
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-def transcribe_with_whisper(audio_path):
-    with open(audio_path, "rb") as f:
-        transcript = client.audio.transcriptions.create(
-            model="gpt-4o-mini-tts",
-            file=f
-        )
-    return transcript.text
-
+client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
 
 # ==========================
 # Spotify認証
@@ -37,13 +29,13 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
+input_mode = st.radio("音声入力方法を選んでください：",
+                      ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
 audio_path = None
 
-
 # ==========================
-# マイク録音モード（修正版）
+# マイク録音モード
 # ==========================
 class AudioProcessor(AudioProcessorBase):
     def __init__(self):
@@ -55,7 +47,7 @@ class AudioProcessor(AudioProcessorBase):
 
 
 if input_mode == "🎙️ マイクで話す":
-    st.info("🎤 『楽しい』『悲しい』『落ち着く』など話してください。")
+    st.info("🎤 感情を含む言葉を話してください。録音が終わったら停止ボタンを押してください。")
 
     webrtc_ctx = webrtc_streamer(
         key="speech-capture",
@@ -67,43 +59,47 @@ if input_mode == "🎙️ マイクで話す":
     )
 
     if webrtc_ctx and webrtc_ctx.state.playing:
-        st.info("録音中…停止ボタンを押してください。")
+        st.info("録音中です…停止ボタンを押すと処理が始まります。")
 
-    # STOPされたタイミングで音声を保存
     if webrtc_ctx and not webrtc_ctx.state.playing:
         if hasattr(webrtc_ctx, "audio_processor") and webrtc_ctx.audio_processor:
             audio_data = webrtc_ctx.audio_processor.audio_frames
             if audio_data:
-                # WAVではなくMP3（WhisperはMP3対応）
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
-                    tmp_mp3.write(audio_data)
-                    audio_path = tmp_mp3.name
-                    st.success("🎙️ 録音完了！Whisperで解析します…")
-
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+                    tmp_wav.write(audio_data)
+                    audio_path = tmp_wav.name
+                    st.success("🎙️ 録音完了！")
 
 # ==========================
-# アップロードモード（mp3対応へ修正）
+# アップロードモード
 # ==========================
 elif input_mode == "📁 音声ファイルをアップロード":
-    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください", type=["wav", "mp3", "m4a"])
+    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav/mp3)", type=["wav", "mp3"])
     if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(uploaded_file.read())
             audio_path = tmp_file.name
             st.success("📁 ファイルを受け取りました")
 
-
 # ==========================
-# Whisperで音声認識
+# Whisper 音声 → テキスト
 # ==========================
 if audio_path:
+    st.info("🎧 Whisperで音声を解析しています…")
+
     try:
-        text = transcribe_with_whisper(audio_path)
-        st.success("📝 Whisper認識結果:")
-        st.write(text)
+        with open(audio_path, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=f
+            )
+        text = transcript.text
     except Exception as e:
-        st.error(f"Whisperでの音声認識に失敗しました: {e}")
+        st.error(f"音声認識に失敗しました: {e}")
         st.stop()
+
+    st.success("🗣️ 音声認識結果:")
+    st.write(text)
 
     # ==========================
     # 感情単語抽出
@@ -117,7 +113,7 @@ if audio_path:
         st.write("抽出された感情単語:", ", ".join(detected))
 
         # ==========================
-        # Spotify検索（邦楽優先）
+        # Spotify検索（邦楽に寄せる）
         # ==========================
         for keyword in detected:
             st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
@@ -130,22 +126,25 @@ if audio_path:
                 continue
 
             for playlist in playlists:
-                playlist_name = playlist['name']
-                playlist_owner = playlist['owner'].get('display_name', '不明')
-                playlist_url = playlist['external_urls']['spotify']
-                playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
-                playlist_id = playlist['id']
+                name = playlist["name"]
+                owner = playlist["owner"].get("display_name", "不明")
+                image = playlist["images"][0]["url"] if playlist["images"] else None
+                url = playlist["external_urls"]["spotify"]
+                playlist_id = playlist["id"]
 
-                with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
-                    if playlist_image:
-                        st.image(playlist_image, width=300)
-                    st.markdown(f"[Spotifyで開く]({playlist_url})")
+                with st.expander(f"🎵 {name}  ({owner})"):
+                    if image:
+                        st.image(image, width=300)
+                    st.markdown(f"[Spotifyで開く]({url})")
 
+                    # 曲一覧
                     tracks = sp.playlist_tracks(playlist_id)
                     st.write("🎶 曲一覧：")
-                    for t in tracks['items']:
-                        track = t['track']
+                    for t in tracks["items"]:
+                        track = t["track"]
                         if track:
-                            st.write(f"- {track['name']} / {track['artists'][0]['name']}")
+                            tname = track["name"]
+                            aname = track["artists"][0]["name"]
+                            st.write(f"- {tname} / {aname}")
 
     os.remove(audio_path)
