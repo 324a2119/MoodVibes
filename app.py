@@ -1,23 +1,31 @@
 import streamlit as st
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import speech_recognition as sr
 import tempfile
 import os
 from dotenv import load_dotenv
+from transformers import pipeline
+import librosa
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+import numpy as np
+import io
+from scipy.io.wavfile import write as write_wav
 
 # .envファイルを読み込む
 load_dotenv()
 
+# 感情分析モデルをロード（キャッシュを利用して高速化）
+@st.cache_resource
+def load_emotion_model():
+    # 初回実行時、モデル（約350MB）がダウンロードされます
+    return pipeline("audio-classification", model="superb/hubert-base-superb-er")
+
 # ==========================
 # Spotify認証
 # ==========================
-# 環境変数から認証情報を取得
 CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 
-# 認証情報が設定されているか確認
 if not CLIENT_ID or not CLIENT_SECRET:
     st.error("Spotifyの認証情報が設定されていません。環境変数（.envファイルなど）を確認してください。")
     st.stop()
@@ -33,145 +41,144 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-# セッション状態で音声ファイルのパスと録音状態を管理
+# セッション状態で音声ファイルのパスと処理状態を管理
 if "audio_path" not in st.session_state:
     st.session_state.audio_path = None
-if "recording_completed" not in st.session_state:
-    st.session_state.recording_completed = False
+if "processing_done" not in st.session_state:
+    st.session_state.processing_done = True
 
-# ==========================
-# 音声入力オプション
-# ==========================
 input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
-# audio_path変数を初期化
 audio_path = None
 
 # ==========================
-# マイク録音モード
+# 🎤 マイク録音モード (streamlit-webrtc)
 # ==========================
 class AudioProcessor(AudioProcessorBase):
     def __init__(self):
-        self.audio_frames = b""
+        self.audio_frames = []
 
-    def recv_audio(self, frame):
-        # 音声データをバイト列として蓄積
-        self.audio_frames += frame.to_ndarray().tobytes()
+    def recv(self, frame):
+        # 音声フレームを蓄積
+        self.audio_frames.append(frame.to_ndarray())
         return frame
 
-
 if input_mode == "🎙️ マイクで話す":
-    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を話してみてください。録音が終わったら停止ボタンを押してください。")
-
+    st.info("🎤 開始ボタンを押して感情を話してください。話し終わったら停止ボタンを押してください。")
+    
     webrtc_ctx = webrtc_streamer(
-        key="speech-capture",
-        mode=WebRtcMode.SENDRECV,
-        audio_receiver_size=1024,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=True,
+        key="speech-to-text",
+        mode=WebRtcMode.SENDONLY,
         audio_processor_factory=AudioProcessor,
+        media_stream_constraints={"video": False, "audio": True},
     )
 
-    # 録音中の処理
-    if webrtc_ctx and webrtc_ctx.state.playing:
-        st.info("録音中です…停止ボタンを押すと処理が始まります。")
-        # 録音開始時に過去の録音状態をリセット
-        st.session_state.recording_completed = False
+    if not webrtc_ctx.state.playing and webrtc_ctx.audio_processor and not st.session_state.processing_done:
+        st.info("録音を処理しています...")
+        
+        # 蓄積した音声フレームを結合
+        audio_frames = webrtc_ctx.audio_processor.audio_frames
+        if audio_frames:
+            sound_chunk = np.concatenate(audio_frames, axis=0)
+            sample_rate = 48000 # webrtcのデフォルトサンプルレート
+
+            # 一時ファイルに保存
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                # numpy配列をwav形式のバイトデータに変換
+                buffer = io.BytesIO()
+                write_wav(buffer, rate=sample_rate, data=sound_chunk)
+                tmp_file.write(buffer.read())
+                audio_path = tmp_file.name
+                st.session_state.audio_path = audio_path
+        
+        st.session_state.processing_done = True
+        st.rerun() # ページを再実行して結果を表示
+
+    if webrtc_ctx.state.playing:
+        # 録音開始時に状態をリセット
+        st.session_state.processing_done = False
         st.session_state.audio_path = None
 
-    # 録音停止後の処理
-    if webrtc_ctx and not webrtc_ctx.state.playing and not st.session_state.recording_completed:
-        if hasattr(webrtc_ctx, "audio_processor") and webrtc_ctx.audio_processor:
-            audio_data = webrtc_ctx.audio_processor.audio_frames
-            if audio_data:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-                    tmp_wav.write(audio_data)
-                    st.session_state.audio_path = tmp_wav.name
-                st.session_state.recording_completed = True
-                # ページを再実行して「録音完了」メッセージを確実に表示
-                st.rerun()
-
-    # 録音完了メッセージの表示
-    if st.session_state.recording_completed:
-        st.success("🎙️ 録音完了！")
-        audio_path = st.session_state.audio_path
-
 # ==========================
-# アップロードモード
+# 📁 アップロード音声モード
 # ==========================
 elif input_mode == "📁 音声ファイルをアップロード":
-    # 過去の録音状態をリセット
-    st.session_state.recording_completed = False
+    st.session_state.processing_done = True # モード切替時にリセット
     st.session_state.audio_path = None
-    
-    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav形式推奨)", type=["wav"])
-    if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(uploaded_file.read())
+
+    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください", type=["wav", "mp3", "m4a"])
+    if uploaded_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+            tmp_file.write(uploaded_file.getbuffer())
             audio_path = tmp_file.name
-            st.success("📁 ファイルを受け取りました")
+            st.session_state.audio_path = audio_path
+        st.rerun()
 
 # ==========================
-# 音声認識処理
+# 感情分析 ＆ Spotify検索
 # ==========================
-if audio_path:
-    r = sr.Recognizer()
+if st.session_state.audio_path:
+    st.success("✅ 音声ファイルを受け付けました。分析を開始します。")
+    current_audio_path = st.session_state.audio_path
+    
     try:
-        with sr.AudioFile(audio_path) as source:
-            audio = r.record(source)
-        text = r.recognize_google(audio, language="ja-JP")
-        st.success("🗣️ 音声認識結果:")
-        st.write(text)
-    except Exception as e:
-        st.error(f"音声認識に失敗しました: {e}")
-        st.stop()
+        # モデルが期待する16kHzにリサンプリングして読み込み
+        speech, sr = librosa.load(current_audio_path, sr=16000)
 
-    # ==========================
-    # 感情単語抽出
-    # ==========================
-    emotion_words = ["楽しい", "悲しい", "ワクワク", "落ち着く", "元気", "切ない"]
-    detected = [w for w in emotion_words if w in text]
+        # 感情を分析
+        emotion_classifier = load_emotion_model()
+        results = emotion_classifier(speech)
+        top_emotion = results[0]['label']
+        
+        st.success(f"感情分析の結果: **{top_emotion}**")
 
-    if not detected:
-        st.info("感情を表す単語が見つかりませんでした。")
-    else:
-        st.write("抽出された感情単語:", ", ".join(detected))
+        # 英語ラベルを日本語キーワードにマッピング
+        emotion_map = {
+            "happy": "楽しい",
+            "sad": "悲しい",
+            "angry": "激しい",
+            "neutral": "落ち着く",
+        }
+        keyword = emotion_map.get(top_emotion)
 
-        # ==========================
-        # Spotify検索（邦楽優先）
-        # ==========================
-        for keyword in detected:
+        if not keyword:
+            st.info(f"感情「{top_emotion}」に対応する検索キーワードが見つかりませんでした。")
+        else:
+            st.write(f"キーワード「{keyword}」でプレイリストを検索します。")
+            
             st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
-
-            results = sp.search(q=f"{keyword} プレイリスト", type="playlist", limit=5, market="JP")
-            playlists = results['playlists']['items']
+            search_results = sp.search(q=f"{keyword} プレイリスト", type="playlist", limit=5, market="JP")
+            playlists = search_results["playlists"]["items"]
 
             if not playlists:
                 st.write("見つかりませんでした")
-                continue
+            else:
+                for playlist in playlists:
+                    if not playlist:
+                        continue
+                    playlist_name = playlist["name"]
+                    playlist_owner = playlist["owner"].get("display_name", "不明")
+                    playlist_url = playlist["external_urls"]["spotify"]
+                    playlist_image = playlist["images"][0]["url"] if playlist["images"] else None
+                    playlist_id = playlist["id"]
 
-            for playlist in playlists:
-                playlist_name = playlist['name']
-                playlist_owner = playlist['owner'].get('display_name', '不明')
-                playlist_url = playlist['external_urls']['spotify']
-                playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
-                playlist_id = playlist['id']
-
-                with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
-                    if playlist_image:
-                        st.image(playlist_image, width=300)
-                    st.markdown(f"[Spotifyで開く]({playlist_url})")
-
-                    tracks = sp.playlist_tracks(playlist_id)
-                    st.write("🎶 曲一覧：")
-                    for t in tracks['items']:
-                        track = t['track']
-                        if track:
-                            track_name = track['name']
-                            artist_name = track['artists'][0]['name']
-                            st.write(f"- {track_name} / {artist_name}")
-
-    os.remove(audio_path)
-    # 処理完了後にセッション状態をリセット
-    st.session_state.audio_path = None
-    st.session_state.recording_completed = False
+                    with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
+                        if playlist_image:
+                            st.image(playlist_image, width=300)
+                        st.markdown(f"[Spotifyで開く]({playlist_url})")
+                        tracks = sp.playlist_tracks(playlist_id)
+                        st.write("🎶 曲一覧：")
+                        for t in tracks["items"]:
+                            track = t["track"]
+                            if track:
+                                name = track["name"]
+                                artist = track["artists"][0]["name"]
+                                st.write(f"- {name} / {artist}")
+    except Exception as e:
+        st.error(f"分析中にエラーが発生しました: {e}")
+    finally:
+        # 一時ファイルを削除し、セッションステートをリセット
+        if os.path.exists(current_audio_path):
+            os.remove(current_audio_path)
+        st.session_state.audio_path = None
+        st.session_state.processing_done = True

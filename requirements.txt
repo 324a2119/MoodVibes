@@ -1,6 +1,10 @@
 streamlit
 spotipy
 SpeechRecognition
+python-dotenv
+transformers
+torch
+scipy
 streamlit-webrtc
 av
-python-dotenv
+librosa
