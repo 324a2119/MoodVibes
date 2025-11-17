@@ -5,12 +5,6 @@ import speech_recognition as sr
 import tempfile
 import os
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
-from openai import OpenAI
-
-# ==========================
-# OpenAI Whisper（APIキーをベタ書き）
-# ==========================
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
 
 # ==========================
 # Spotify認証
@@ -29,8 +23,10 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-input_mode = st.radio("音声入力方法を選んでください：",
-                      ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
+# ==========================
+# 音声入力オプション
+# ==========================
+input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
 audio_path = None
 
@@ -42,12 +38,13 @@ class AudioProcessor(AudioProcessorBase):
         self.audio_frames = b""
 
     def recv_audio(self, frame):
+        # 音声データをバイト列として蓄積
         self.audio_frames += frame.to_ndarray().tobytes()
         return frame
 
 
 if input_mode == "🎙️ マイクで話す":
-    st.info("🎤 感情を含む言葉を話してください。録音が終わったら停止ボタンを押してください。")
+    st.info("🎤 『楽しい』『悲しい』『落ち着く』などの感情を話してみてください。録音が終わったら停止ボタンを押してください。")
 
     webrtc_ctx = webrtc_streamer(
         key="speech-capture",
@@ -58,6 +55,7 @@ if input_mode == "🎙️ マイクで話す":
         audio_processor_factory=AudioProcessor,
     )
 
+    # 録音が完了したら音声を保存
     if webrtc_ctx and webrtc_ctx.state.playing:
         st.info("録音中です…停止ボタンを押すと処理が始まります。")
 
@@ -74,7 +72,7 @@ if input_mode == "🎙️ マイクで話す":
 # アップロードモード
 # ==========================
 elif input_mode == "📁 音声ファイルをアップロード":
-    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav/mp3)", type=["wav", "mp3"])
+    uploaded_file = st.file_uploader("音声ファイルをアップロードしてください (wav形式推奨)", type=["wav"])
     if uploaded_file is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_file.write(uploaded_file.read())
@@ -82,24 +80,19 @@ elif input_mode == "📁 音声ファイルをアップロード":
             st.success("📁 ファイルを受け取りました")
 
 # ==========================
-# Whisper 音声 → テキスト
+# 音声認識処理
 # ==========================
 if audio_path:
-    st.info("🎧 Whisperで音声を解析しています…")
-
+    r = sr.Recognizer()
     try:
-        with open(audio_path, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=f
-            )
-        text = transcript.text
+        with sr.AudioFile(audio_path) as source:
+            audio = r.record(source)
+        text = r.recognize_google(audio, language="ja-JP")
+        st.success("🗣️ 音声認識結果:")
+        st.write(text)
     except Exception as e:
         st.error(f"音声認識に失敗しました: {e}")
         st.stop()
-
-    st.success("🗣️ 音声認識結果:")
-    st.write(text)
 
     # ==========================
     # 感情単語抽出
@@ -113,7 +106,7 @@ if audio_path:
         st.write("抽出された感情単語:", ", ".join(detected))
 
         # ==========================
-        # Spotify検索（邦楽に寄せる）
+        # Spotify検索（邦楽優先）
         # ==========================
         for keyword in detected:
             st.subheader(f"🎧 「{keyword}」に関連するプレイリスト")
@@ -126,25 +119,24 @@ if audio_path:
                 continue
 
             for playlist in playlists:
-                name = playlist["name"]
-                owner = playlist["owner"].get("display_name", "不明")
-                image = playlist["images"][0]["url"] if playlist["images"] else None
-                url = playlist["external_urls"]["spotify"]
-                playlist_id = playlist["id"]
+                playlist_name = playlist['name']
+                playlist_owner = playlist['owner'].get('display_name', '不明')
+                playlist_url = playlist['external_urls']['spotify']
+                playlist_image = playlist['images'][0]['url'] if playlist['images'] else None
+                playlist_id = playlist['id']
 
-                with st.expander(f"🎵 {name}  ({owner})"):
-                    if image:
-                        st.image(image, width=300)
-                    st.markdown(f"[Spotifyで開く]({url})")
+                with st.expander(f"🎵 {playlist_name}  ({playlist_owner})"):
+                    if playlist_image:
+                        st.image(playlist_image, width=300)
+                    st.markdown(f"[Spotifyで開く]({playlist_url})")
 
-                    # 曲一覧
                     tracks = sp.playlist_tracks(playlist_id)
                     st.write("🎶 曲一覧：")
-                    for t in tracks["items"]:
-                        track = t["track"]
+                    for t in tracks['items']:
+                        track = t['track']
                         if track:
-                            tname = track["name"]
-                            aname = track["artists"][0]["name"]
-                            st.write(f"- {tname} / {aname}")
+                            track_name = track['name']
+                            artist_name = track['artists'][0]['name']
+                            st.write(f"- {track_name} / {artist_name}")
 
     os.remove(audio_path)
