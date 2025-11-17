@@ -23,7 +23,7 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 st.title("🎵 音声から感情を読み取ってSpotifyプレイリスト検索")
 st.write("マイクで話すか、音声ファイルをアップロードして感情を検出します。")
 
-input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す（無料）", "📁 音声ファイルをアップロード"])
+input_mode = st.radio("音声入力方法を選んでください：", ["🎙️ マイクで話す", "📁 音声ファイルをアップロード"])
 
 audio_path = None
 text = ""
@@ -31,7 +31,7 @@ text = ""
 # ==========================
 # 🎤 Web Speech API（無料）でマイク入力
 # ==========================
-if input_mode == "🎙️ マイクで話す（無料）":
+if input_mode == "🎙️ マイクで話す":
     st.info("🎤 開始ボタンを押して感情を話してください（『楽しい』『悲しい』『落ち着く』など）")
 
     # 結果受け取り用 session_state
